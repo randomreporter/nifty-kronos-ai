@@ -36,6 +36,42 @@ def resolve_ticker(input_ticker: str) -> str:
         return f"{ticker}.NS"
     return ticker
 
+def fetch_market_data(ticker_code: str, period: str, interval: str) -> pd.DataFrame:
+    """Robust market data fetcher with multiple fallbacks for cloud servers."""
+    # Method 1: yf.Ticker.history()
+    try:
+        t = yf.Ticker(ticker_code)
+        raw = t.history(period=period, interval=interval)
+        if not raw.empty and len(raw) > 10:
+            return raw
+    except Exception:
+        pass
+
+    # Method 2: yf.download()
+    try:
+        raw = yf.download(ticker_code, period=period, interval=interval, progress=False, auto_adjust=False)
+        if not raw.empty and len(raw) > 10:
+            return raw
+    except Exception:
+        pass
+
+    # Method 3: Fallback for index symbols on Cloud IPs
+    alt_map = {
+        "^NSEI": "NIFTY.NS",
+        "^NSEBANK": "BANKNIFTY.NS",
+        "^BSESN": "SENSEX.BO"
+    }
+    if ticker_code in alt_map:
+        try:
+            t = yf.Ticker(alt_map[ticker_code])
+            raw = t.history(period=period, interval=interval)
+            if not raw.empty:
+                return raw
+        except Exception:
+            pass
+
+    return pd.DataFrame()
+
 @st.cache_resource
 def load_kronos_model():
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -83,10 +119,10 @@ if run_btn or "forecast_data" not in st.session_state:
         lookback = 400
 
     with st.spinner(f"Fetching market data for {ticker_code} and running Kronos AI inference..."):
-        raw = yf.download(ticker_code, period=period, interval=interval, progress=False, auto_adjust=False)
+        raw = fetch_market_data(ticker_code, period=period, interval=interval)
 
         if raw.empty:
-            st.error(f"Could not fetch market data for ticker '{ticker_code}'. Please check the symbol.")
+            st.error(f"Could not fetch market data for ticker '{ticker_code}'. Please check the symbol or try again.")
         else:
             raw.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in raw.columns]
             df = raw[["open", "high", "low", "close", "volume"]].dropna().tail(lookback).reset_index()
