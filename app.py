@@ -1,5 +1,7 @@
 import sys
 import os
+import urllib.parse
+import requests
 
 # Suppress HuggingFace hub symlink warning
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -37,38 +39,55 @@ def resolve_ticker(input_ticker: str) -> str:
     return ticker
 
 def fetch_market_data(ticker_code: str, period: str, interval: str) -> pd.DataFrame:
-    """Robust market data fetcher with multiple fallbacks for cloud servers."""
-    # Method 1: yf.Ticker.history()
+    """Bulletproof data fetcher using Yahoo Finance direct REST API with browser headers (Cloud-Safe)."""
+    encoded_ticker = urllib.parse.quote(ticker_code)
+    range_str = "3y" if period in ["3y", "max"] else period
+    
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_ticker}?range={range_str}&interval={interval}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            res_json = response.json()
+            chart_results = res_json.get("chart", {}).get("result")
+            if chart_results and len(chart_results) > 0:
+                chart = chart_results[0]
+                timestamps = chart.get("timestamp", [])
+                indicators = chart.get("indicators", {}).get("quote", [{}])[0]
+                
+                if timestamps and indicators:
+                    df = pd.DataFrame({
+                        "timestamps": pd.to_datetime(timestamps, unit="s"),
+                        "open": indicators.get("open"),
+                        "high": indicators.get("high"),
+                        "low": indicators.get("low"),
+                        "close": indicators.get("close"),
+                        "volume": indicators.get("volume", [0] * len(timestamps))
+                    })
+                    df = df.dropna(subset=["close"]).reset_index(drop=True)
+                    if not df.empty and len(df) > 10:
+                        return df
+    except Exception as e:
+        print(f"Direct REST API Fetch error: {e}")
+        
+    # Fallback method: yfinance Ticker history
     try:
         t = yf.Ticker(ticker_code)
         raw = t.history(period=period, interval=interval)
         if not raw.empty and len(raw) > 10:
-            return raw
+            raw.columns = [c.lower() for c in raw.columns]
+            df = raw.reset_index()
+            df = df.rename(columns={df.columns[0]: "timestamps"})
+            df["timestamps"] = pd.to_datetime(df["timestamps"]).dt.tz_localize(None)
+            df = df[["timestamps", "open", "high", "low", "close", "volume"]].dropna(subset=["close"]).reset_index(drop=True)
+            return df
     except Exception:
         pass
-
-    # Method 2: yf.download()
-    try:
-        raw = yf.download(ticker_code, period=period, interval=interval, progress=False, auto_adjust=False)
-        if not raw.empty and len(raw) > 10:
-            return raw
-    except Exception:
-        pass
-
-    # Method 3: Fallback for index symbols on Cloud IPs
-    alt_map = {
-        "^NSEI": "NIFTY.NS",
-        "^NSEBANK": "BANKNIFTY.NS",
-        "^BSESN": "SENSEX.BO"
-    }
-    if ticker_code in alt_map:
-        try:
-            t = yf.Ticker(alt_map[ticker_code])
-            raw = t.history(period=period, interval=interval)
-            if not raw.empty:
-                return raw
-        except Exception:
-            pass
 
     return pd.DataFrame()
 
@@ -119,15 +138,12 @@ if run_btn or "forecast_data" not in st.session_state:
         lookback = 400
 
     with st.spinner(f"Fetching market data for {ticker_code} and running Kronos AI inference..."):
-        raw = fetch_market_data(ticker_code, period=period, interval=interval)
+        df_raw = fetch_market_data(ticker_code, period=period, interval=interval)
 
-        if raw.empty:
+        if df_raw.empty:
             st.error(f"Could not fetch market data for ticker '{ticker_code}'. Please check the symbol or try again.")
         else:
-            raw.columns = [c[0].lower() if isinstance(c, tuple) else c.lower() for c in raw.columns]
-            df = raw[["open", "high", "low", "close", "volume"]].dropna().tail(lookback).reset_index()
-            df = df.rename(columns={df.columns[0]: "timestamps"})
-            df["timestamps"] = pd.to_datetime(df["timestamps"]).dt.tz_localize(None)
+            df = df_raw[["timestamps", "open", "high", "low", "close", "volume"]].dropna().tail(lookback).reset_index(drop=True)
 
             predictor, device = load_kronos_model()
 
