@@ -1,7 +1,7 @@
 import sys
 import os
 
-# Suppress HuggingFace hub symlink warning on Windows & force stdout encoding to UTF-8
+# Suppress HuggingFace hub symlink warning
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -32,6 +32,42 @@ def resolve_ticker(input_ticker: str) -> str:
         return f"{ticker}.NS"
     return ticker
 
+def fetch_market_data(ticker_code: str, period: str, interval: str) -> pd.DataFrame:
+    """Robust market data fetcher with multiple fallbacks for cloud servers."""
+    # Method 1: yf.Ticker.history()
+    try:
+        t = yf.Ticker(ticker_code)
+        raw = t.history(period=period, interval=interval)
+        if not raw.empty and len(raw) > 10:
+            return raw
+    except Exception:
+        pass
+
+    # Method 2: yf.download()
+    try:
+        raw = yf.download(ticker_code, period=period, interval=interval, progress=False, auto_adjust=False)
+        if not raw.empty and len(raw) > 10:
+            return raw
+    except Exception:
+        pass
+
+    # Method 3: Fallback for index symbols on Cloud IPs
+    alt_map = {
+        "^NSEI": "NIFTY.NS",
+        "^NSEBANK": "BANKNIFTY.NS",
+        "^BSESN": "SENSEX.BO"
+    }
+    if ticker_code in alt_map:
+        try:
+            t = yf.Ticker(alt_map[ticker_code])
+            raw = t.history(period=period, interval=interval)
+            if not raw.empty:
+                return raw
+        except Exception:
+            pass
+
+    return pd.DataFrame()
+
 def main():
     raw_ticker = sys.argv[1] if len(sys.argv) > 1 else "NIFTY"
     mode = sys.argv[2].lower() if len(sys.argv) > 2 else "daily"
@@ -59,7 +95,7 @@ def main():
 
     # 1. Download market data
     print(f"Fetching historical market data from Yahoo Finance...")
-    raw = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
+    raw = fetch_market_data(ticker, period=period, interval=interval)
     
     if raw.empty:
         print(f"ERROR: Could not fetch data for '{ticker}'. Please check the symbol.")

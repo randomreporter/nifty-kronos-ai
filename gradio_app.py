@@ -34,6 +34,39 @@ def resolve_ticker(input_ticker: str) -> str:
         return f"{ticker}.NS"
     return ticker
 
+def fetch_market_data(ticker_code: str, period: str, interval: str) -> pd.DataFrame:
+    """Robust market data fetcher with multiple fallbacks for cloud servers."""
+    try:
+        t = yf.Ticker(ticker_code)
+        raw = t.history(period=period, interval=interval)
+        if not raw.empty and len(raw) > 10:
+            return raw
+    except Exception:
+        pass
+
+    try:
+        raw = yf.download(ticker_code, period=period, interval=interval, progress=False, auto_adjust=False)
+        if not raw.empty and len(raw) > 10:
+            return raw
+    except Exception:
+        pass
+
+    alt_map = {
+        "^NSEI": "NIFTY.NS",
+        "^NSEBANK": "BANKNIFTY.NS",
+        "^BSESN": "SENSEX.BO"
+    }
+    if ticker_code in alt_map:
+        try:
+            t = yf.Ticker(alt_map[ticker_code])
+            raw = t.history(period=period, interval=interval)
+            if not raw.empty:
+                return raw
+        except Exception:
+            pass
+
+    return pd.DataFrame()
+
 def generate_forecast(asset_name, custom_asset, timeframe_name):
     target = custom_asset if asset_name == "Custom" else asset_name
     ticker_code = resolve_ticker(target)
@@ -54,7 +87,7 @@ def generate_forecast(asset_name, custom_asset, timeframe_name):
         mode_str = "HOURLY"
         lookback = 400
 
-    raw = yf.download(ticker_code, period=period, interval=interval, progress=False, auto_adjust=False)
+    raw = fetch_market_data(ticker_code, period=period, interval=interval)
 
     if raw.empty:
         return f"Error: Could not fetch market data for {ticker_code}", None
